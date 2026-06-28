@@ -1,0 +1,32 @@
+{
+  "id": "proper-prepper-pwa-001",
+  "title": "Installable PWA skeleton with offline service-worker precache",
+  "project": "proper-prepper",
+  "type": "code",
+  "lane": "donated",
+  "priority": "high",
+  "domain": ["public-safety", "software", "accessibility"],
+  "riskTier": "low",
+  "urgent": false,
+  "deliverable": "pr",
+  "tokenEstimate": "medium",
+  "status": "open",
+  "context": "proper-prepper is an offline-first, installable open-source PWA giving households calm, evidence-based disaster-preparedness tools that keep working with no connectivity. This task lays the thin M0 foundation: an installable app shell with a service-worker offline cache and the privacy/no-telemetry posture baked in from day one.",
+  "objective": "Create a TypeScript/ESM PWA skeleton that installs, registers a service worker precaching the app shell, loads fully offline after first visit, and ships no telemetry or trackers.",
+  "acceptanceCriteria": [
+    "Service worker precaches the app shell; the app loads with the network fully disabled after first visit",
+    "Web app manifest present and the app passes Lighthouse PWA installability checks",
+    "Explicit update flow (update prompt or controlled reload) and an offline fallback page exist",
+    "No third-party analytics/trackers and no network egress beyond initial load and update check",
+    "TypeScript/ESM project builds with pnpm; pnpm build && pnpm test && pnpm lint all pass"
+  ],
+  "resources": [
+    "C:\\code\\elyos\\planning\\projects\\proper-prepper\\PLAN.md",
+    "C:\\code\\elyos\\governance\\proposals\\proper-prepper.md",
+    "https://web.dev/learn/pwa/"
+  ],
+  "output": "A pull request adding the installable, offline-capable PWA skeleton (service worker, manifest, app shell, update flow) with CI-ready build.",
+  "requestor": "TBD",
+  "verifiedNeed": false,
+  "outputLicense": "MIT"
+}
