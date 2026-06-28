@@ -1,6 +1,6 @@
 # TASKS — proper-prepper (offline-first disaster-prep open toolkit)
 
-> Status: Draft · Version: 0.1.0 · Last updated: 2026-06-28 · Owner: TBD (maintainer) · Lane: donated
+> Status: Draft · Version: 0.2.0 · Last updated: 2026-06-28 · Owner: TBD (maintainer) · Lane: donated
 
 ## How these tasks map to Elyos
 
@@ -30,6 +30,18 @@ Each task below becomes an Elyos **Task JSON** validated against
 `content/SME` (domain + emergency-management subject-matter expert for medium-risk safety content),
 `translation+safety` (competent speaker paired with safety-accuracy re-check).
 
+**Content review rule (all `content/SME` tasks):** the unit's **author may not approve their own
+work** — `reviewedBy` (author) and `approvedBy` (SME) must be distinct people, and the approving SME
+must meet the credential bar (current/former emergency-management or civil-protection professional,
+licensed first responder, or equivalent recognized qualification). Each approval writes a **PR-tied,
+append-only review-log entry** (PR #, commit SHA, `contentVersion`, reviewer + approver, sources
+checked, any source-divergence decision). This is the auditable record the Definition of Shipped
+checks against.
+
+**Sequencing rule (M0):** ADR #3 (content format) is decided in **arch-002 before** the content
+schema (**data-004**) and any content precaching are finalized; until then the schema is provisional
+and format-agnostic. data-004 therefore depends on arch-002 (consistent below).
+
 ---
 
 ## Milestone M0 — Foundation & cold-start
@@ -37,8 +49,8 @@ Each task below becomes an Elyos **Task JSON** validated against
 | ID | Title | Type | Size | Risk | Deliverable | Depends on | Reviewer |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | proper-prepper-pwa-001 | Installable PWA skeleton with offline service-worker precache | code | medium | low | pr | — | maintainer |
-| proper-prepper-arch-002 | ADRs: UI framework, SW tooling, content format, hosting | design-spec | small | low | document | — | maintainer |
-| proper-prepper-ci-003 | CI gates: lint, typecheck, unit, axe a11y, offline smoke E2E, no-telemetry audit | code | medium | low | pr | pwa-001 | maintainer |
+| proper-prepper-arch-002 | ADRs: UI framework (i18n/RTL scope as input), SW tooling + precache budget/eviction + content-version manifest, **content format (decide first)**, hosting | design-spec | small | low | document | — | maintainer |
+| proper-prepper-ci-003 | CI gates: lint, typecheck, unit, axe a11y, offline smoke E2E, no-telemetry audit (CSP `connect-src 'none'` + runtime network-interception E2E) | code | medium | low | pr | pwa-001 | maintainer |
 | proper-prepper-data-004 | Content-unit schema + provenance/review-log format | data | small | low | dataset | arch-002 | maintainer, content/SME |
 | proper-prepper-content-005 | Sample hazard module (flood), source-cited to official guidance | writing | small | medium | document | data-004 | content/SME |
 
@@ -49,22 +61,37 @@ Each task below becomes an Elyos **Task JSON** validated against
     network fully disabled.
   - Web app manifest present; app is installable (passes Lighthouse PWA installability).
   - Explicit update flow (prompt or controlled reload); offline fallback page exists.
-  - No third-party trackers/analytics; no network egress beyond initial load/update check.
+  - Precache stays within the budget set in arch-002; eviction is LRU over non-active-locale units
+    only, with the active locale's hazard set + fallback pinned; `QuotaExceededError` is handled
+    gracefully (prune-and-retry, then a clear notice — never silent drop of pinned safety content).
+  - No third-party trackers/analytics; no network egress beyond initial load/update check, enforced
+    by CSP `connect-src 'none'`.
   - TypeScript/ESM, builds via pnpm; `pnpm build && pnpm test && pnpm lint` pass.
 - **proper-prepper-ci-003 (CI gates):**
   - CI fails on lint/type/unit errors, on any critical axe violation, and on offline E2E failure.
-  - A "no-telemetry/no-PII" static audit step fails if a tracker, analytics endpoint, or PII field
-    is introduced.
+  - A "no-telemetry/no-PII" check uses defense in depth: the static audit (tracker/analytics/PII
+    detection) **plus** a runtime network-interception E2E that exercises every core flow and fails
+    on any unexpected outbound request; CSP `connect-src 'none'` is asserted. A static grep alone is
+    not sufficient to pass.
 - **proper-prepper-data-004 (content schema):**
-  - Schema captures hazard id, localized fields, region applicability, `sources[]` (org/title/url/
-    retrievedDate/sourceLicense), `reviewStatus`, `reviewedBy`, `lastReviewed`, `lang`,
-    `contentLicense`.
-  - Build-time validation rejects a unit missing required citation or review fields.
+  - Schema captures hazard id, localized fields, region applicability (incl. region overrides),
+    `sources[]` (org/title/url/retrievedDate/sourceLicense), `reviewStatus`, `reviewedBy` (author),
+    `approvedBy` (distinct SME), `reviewLogRef`, `lastReviewed`, `lang`, `contentLicense`,
+    `contentVersion`, `integrityHash`, `hardInvalidate`.
+  - Format follows the content-format ADR (arch-002), which lands first; schema is provisional until
+    that ADR is decided.
+  - Build-time validation rejects a unit missing required citation/review fields **and** rejects a
+    unit where `approvedBy` equals `reviewedBy` (no self-approval).
 - **proper-prepper-content-005 (flood sample):**
   - Every claim is traceable to a cited official source (FEMA/Red Cross/WHO/local), with retrieval
     date and source license recorded.
   - No high-stakes medical/legal/weapons instruction; links out where appropriate.
-  - Passes content/SME accuracy review before merge; no verbatim copying of copyrighted source text.
+  - Where official sources diverge, the source-divergence precedence rule is applied (region
+    jurisdiction first; WHO for health / FEMA·Red Cross·IFRC for physical hazards globally; state and
+    link both where they still materially disagree) and the decision is recorded in the review log.
+  - Passes content/SME accuracy review before merge by an approver **distinct from the author** who
+    meets the SME credential bar; a PR-tied review-log entry is written; no verbatim copying of
+    copyrighted source text.
 
 **Definition of Done (M0):** Installable PWA loads fully offline after first visit; CI enforces
 lint/type/unit/a11y/offline/no-telemetry gates; content schema + provenance/review-log defined; ADRs
@@ -94,7 +121,11 @@ audit is green.
   - Decision steps reviewed by content/SME for safety accuracy.
 - **proper-prepper-a11y-009 (AA hardening):**
   - Automated axe/pa11y pass with 0 critical issues across all core flows.
-  - Documented manual audit with a screen reader + keyboard-only navigation; issues fixed or logged.
+  - Documented manual audit across the defined support matrix — NVDA+Firefox/Win, JAWS+Chrome/Win,
+    VoiceOver+Safari/macOS·iOS, TalkBack+Chrome/Android, plus keyboard-only per desktop browser —
+    performed/signed off by the qualified accessibility reviewer; cadence is before each milestone
+    exit and each production release, with regression passes on navigation/focus/interaction changes;
+    issues fixed or logged.
 
 **Definition of Done (M1):** All core flows (checklists, plan builder, go-bag, what-to-do-now,
 printable export) work offline and meet WCAG 2.2 AA (automated + manual); on-device data confirmed to
@@ -106,9 +137,9 @@ stay local; ≥ 3 hazards content-complete and SME-reviewed.
 
 | ID | Title | Type | Size | Risk | Deliverable | Depends on | Reviewer |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| proper-prepper-i18n-011 | i18n framework, message extraction, locale negotiation + safe fallback | code | medium | low | pr | feat-006 | maintainer, a11y |
+| proper-prepper-i18n-011 | i18n framework (RTL, bundled offline fonts, ICU pluralization, locale-format), message extraction, locale negotiation + safe fallback | code | medium | low | pr | feat-006 | maintainer, a11y |
 | proper-prepper-i18n-012 | Translation completeness check in CI | code | small | low | pr | i18n-011 | maintainer |
-| proper-prepper-l10n-013 | First non-English UI localization | writing | medium | medium | translation | i18n-011 | translation+safety |
+| proper-prepper-l10n-013 | First non-English UI localization (Spanish/es, provisional; partner may override) | writing | medium | medium | translation | i18n-011 | translation+safety |
 | proper-prepper-l10n-014 | Localize ≥ 1 hazard module into the target language (safety-accuracy reviewed) | writing | medium | medium | translation | l10n-013, content-010 | translation+safety, content/SME |
 
 **Acceptance criteria — key tasks**
@@ -116,7 +147,11 @@ stay local; ≥ 3 hazards content-complete and SME-reviewed.
 - **proper-prepper-i18n-011 (i18n framework):**
   - Strings externalized to message catalogs; locale negotiation falls back safely to English when a
     key/locale is missing (no blank/broken safety text).
-  - i18n layer works offline (catalogs precached).
+  - Supports bidirectional/RTL layout (logical CSS, `dir`, mirrored components), bundled offline
+    fonts with required glyph coverage (no runtime web-font fetch), ICU pluralization/select, and
+    locale-aware number/date/list/unit formatting — these were settled as input to the UI-framework
+    ADR (arch-002).
+  - i18n layer works offline (catalogs + fonts precached).
 - **proper-prepper-l10n-014 (localized hazard):**
   - Translation is accuracy-reviewed for safety meaning, not only fluency, against the source unit
     and official guidance in that language where available.
@@ -146,18 +181,30 @@ passes accuracy review.
   - On success, `verifiedNeed` flips to `true` and `requestor` is set to the named org across the
     project's tasks.
 - **proper-prepper-deploy-018 (production deploy):**
-  - Static production build deployed over HTTPS; versioned precache with a working update prompt so
-    users are not stuck on stale safety content.
+  - Static production build deployed over HTTPS; versioned precache driven by the content-version
+    manifest, with a soft update prompt for routine changes **and** a non-dismissible hard-invalidation
+    path that purges and re-fetches any safety-corrected unit, so users are never stuck on stale
+    safety content.
   - Visible disclaimer that the tool is not an official agency product unless a named partner
     endorses it; trademark/attribution terms present.
 - **proper-prepper-ops-019 (outcomes + freshness):**
-  - Documented, privacy-preserving outcomes process (partner self-report; no in-app telemetry).
+  - Documented, privacy-preserving outcomes process (partner self-report; no in-app telemetry) using
+    a standard template (partner, period, channels, **distinct households reached (confirmed)**,
+    flagged estimates, regions/languages, de-dup notes) over a rolling 12-month window; counts
+    distinct households (not downloads/page views), counts a household once per period across
+    touchpoints, and de-duplicates across partners at roll-up.
   - Re-review cadence defined; stale-content flagging based on `lastReviewed`.
 
 **Definition of Done (M3):** ≥ 6 reviewed hazards; ≥ 3 localized languages; **named partner
 endorsement/adoption on file** (verifiedNeed = true); production build deployed with safe update
 strategy; outcomes tracking + re-review cadence operational. This satisfies the project-level
-*Definition of Shipped*.
+*Definition of Shipped (partner-adopted)*.
+
+**Decision point (so a finished toolkit isn't stranded):** if no partner is secured by **6 months
+after the M3 production build is ready**, the steward + Elyos governance declare **"Publicly Shipped
+(generic public good)"** — criteria (1)–(4) met, deployed and distributed directly/via community
+channels, outcomes tracked by best-effort self-report. This is a recognized success state; a later
+partner endorsement upgrades the status to "partner-adopted" rather than re-opening launch.
 
 ---
 

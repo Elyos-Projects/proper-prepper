@@ -1,6 +1,6 @@
 # PLAN — proper-prepper (offline-first disaster-prep open toolkit)
 
-> Status: Draft · Version: 0.1.0 · Last updated: 2026-06-28 · Owner: TBD (maintainer) · Lane: donated
+> Status: Draft · Version: 0.2.0 · Last updated: 2026-06-28 · Owner: TBD (maintainer) · Lane: donated
 
 ## Executive summary
 
@@ -85,12 +85,30 @@ Outcome-centric, beneficiary-first. Baselines are zero at project start unless n
 | Languages fully localized (UI + shipped content) | 1 (en) | ≥ 3 languages | Translation completeness check in CI |
 | Accessibility conformance | none | WCAG 2.2 AA verified; 0 critical axe violations; manual AT pass | Automated (axe/pa11y) + manual screen-reader audit |
 | Offline reliability | none | 100% of core flows work with network disabled after install | Automated offline E2E test in CI |
-| Households reached (partner-reported, opt-in) | 0 | Partner-reported distribution ≥ 5,000 | Partner self-report (no in-app tracking) |
-| Privacy posture | n/a | 0 telemetry endpoints, 0 third-party trackers, 0 PII fields | Static audit in CI + manifest review |
+| Households reached (partner-reported, opt-in) | 0 | ≥ 5,000 distinct households reached over the first 12 months post-launch (denominator: distinct households, not page loads or downloads) | Partner self-report via standard template (no in-app tracking) |
+| Privacy posture | n/a | 0 telemetry endpoints, 0 third-party trackers, 0 PII fields | Static audit in CI + manifest review + **runtime network-interception E2E** (CSP `connect-src 'none'`; test fails on any unexpected request) |
 
 We deliberately avoid vanity metrics (downloads alone, stars). Because we collect **no telemetry**,
 reach is measured via partner self-report, not in-app analytics — an honest trade-off that
 prioritizes user privacy over precise measurement.
+
+**Reach measurement — windows, denominators, and anti-double-counting.** "Households reached" is a
+count of **distinct households** (not page views, downloads, installs, or distributed leaflets) over
+a **rolling 12-month window** that starts at production launch. To keep the number honest across
+multiple partners and channels:
+- Each partner counts a household **once per reporting period** even if it received the toolkit
+  through several touchpoints (event + clinic + download), and households reached by more than one
+  partner are de-duplicated by the steward at roll-up (best-effort, partner-attested, regional
+  overlap noted) rather than summed naively.
+- Recurring distributions (e.g. the same standing class each quarter) count the **household**, not
+  each session.
+- Estimates and extrapolations are recorded **as estimates**, separately from confirmed counts.
+
+**Partner self-report template (standard fields).** Each partner reports, per period: partner name;
+reporting period (start/end); channel(s) used; **distinct households reached (confirmed)**; estimated
+additional reach (clearly flagged as estimate); region(s)/language(s) served; de-dup notes (known
+overlap with other partners/channels); and a free-text outcomes note. The steward keeps these
+reports in the manual outcomes record and publishes only de-duplicated, aggregated figures.
 
 ## Scope
 
@@ -125,13 +143,38 @@ load and optional update checks.
 - **App shell (UI):** TypeScript/ESM, component-based (framework TBD — lightweight, a11y-friendly,
   e.g. Preact/Svelte/Lit; decision recorded in M0). Routing is client-side and offline-capable.
 - **Service worker / offline layer:** precache of the app shell + content bundle; runtime caching
-  strategy (cache-first for content, stale-while-revalidate for the shell); explicit update prompt;
-  graceful offline fallback page. Built with a maintained tooling layer (e.g. Workbox or a vetted
-  equivalent) — choice recorded as an ADR in M0.
+  strategy (cache-first for content, stale-while-revalidate for the shell); graceful offline fallback
+  page. Built with a maintained tooling layer (e.g. Workbox or a vetted equivalent) — choice recorded
+  as an ADR in M0.
+  - **Precache size budget & eviction (low-end devices).** Multilingual content across the 6 target
+    hazards must fit a constrained device. We set an explicit **precache budget** (target ≤ ~15 MB
+    for shell + the user's active locale(s); hard ceiling recorded in the SW ADR) and **do not**
+    precache every locale × hazard up front. Strategy: precache shell + the negotiated/active locale's
+    hazard set; fetch-and-cache other locales on demand (cache-first thereafter). Eviction is **LRU
+    over non-active-locale hazard units only** — the active locale's full hazard set and the offline
+    fallback are **pinned and never evicted**, so a household never loses the safety content it is
+    relying on. On `QuotaExceededError` the SW prunes least-recently-used non-pinned units, retries,
+    and if still failing surfaces a clear "storage full — some other-language content unavailable
+    offline" notice rather than silently dropping pinned safety content.
+  - **Forced update for safety-critical content (not a dismissible prompt).** The app ships a
+    **content-version manifest** (per-unit content version + integrity hash, separate from the app
+    shell version). On load/SW activation the SW compares cached units against the manifest; a unit
+    marked **hard-invalidated** (e.g. corrected after an error in official guidance) is purged from
+    cache and **must** be re-fetched before it can be shown — it cannot be served stale and the
+    update is **not dismissible** for that unit. Routine, non-safety updates may still use a soft
+    "new version available" reload prompt; the hard-invalidation path is reserved for safety
+    corrections. See *Security & privacy* for integrity details.
 - **Content store:** versioned structured content (see data model) shipped as static JSON/MDX bundles
   loaded into the offline cache. No remote content fetch at runtime is required.
 - **i18n layer:** message catalogs per locale; content units keyed by `(hazardId, lang)`; build-time
-  completeness validation; locale negotiation with safe fallback to English.
+  completeness validation; locale negotiation with safe fallback to English. **Scope is explicit and
+  settled before the UI-framework ADR** (the framework must demonstrably support all of it): full
+  **bidirectional/RTL** layout (logical CSS properties, `dir` handling, mirrored components),
+  **bundled offline fonts** with the glyph coverage each shipped locale needs (no runtime web-font
+  fetch — consistent with zero egress), **ICU-style pluralization and gender/select** rules, and
+  **locale-aware formatting** of numbers, dates, lists, and units. **First non-English locale: a
+  Spanish (es) localization** as the M2 target (subject to partner override once a partner is
+  secured); an RTL locale is the priority for M3 so RTL is exercised early rather than retrofitted.
 - **Export/print:** print-optimized CSS and client-side PDF generation (no server).
 - **Build/CI:** pnpm workspace; lint, typecheck, unit, a11y, and offline E2E gates.
 
@@ -149,19 +192,36 @@ HazardModule {
   sections: { explainer, beforeNow, duringNow, afterNow, checklist[] }
   sources: Citation[]        // { org, title, url, retrievedDate, sourceLicense }
   reviewStatus: "draft" | "in-review" | "approved"
-  reviewedBy: string         // reviewer attribution
+  reviewedBy: string         // reviewer attribution (authoring SME)
+  approvedBy: string         // separate approver; MUST differ from reviewedBy (no self-approval)
+  reviewLogRef: string       // PR-tied tamper-evident review-log entry (see Quality gates)
   lastReviewed: date
   lang: string
   contentLicense: "CC-BY-4.0"
+  contentVersion: string     // per-unit version, independent of app-shell version
+  integrityHash: string      // hash of unit payload; checked against content-version manifest
+  hardInvalidate: boolean    // true => cached copies must be purged & re-fetched, non-dismissible
 }
 ```
 
+A separate **content-version manifest** lists every unit's `contentVersion` + `integrityHash` and
+the `hardInvalidate` flag; the service worker reconciles cached units against it on activation (see
+*Solution approach & architecture* and *Security & privacy*).
+
 **Key decisions (to be recorded as ADRs in M0).**
-1. UI framework choice (a11y + bundle size + offline simplicity weighted).
-2. Service-worker tooling (Workbox vs. hand-rolled) and caching strategy.
+1. UI framework choice (a11y + bundle size + offline simplicity weighted) — its i18n/RTL/pluralization
+   support is a hard input, so the *i18n scope above is settled before this ADR is finalized*.
+2. Service-worker tooling (Workbox vs. hand-rolled), caching strategy, **precache budget & eviction
+   policy**, and **content-version manifest / hard-invalidation** mechanism.
 3. Content format (JSON vs. MDX) and how citations/review status are enforced in CI.
 4. Hosting target and update/versioning strategy for cached clients.
 5. PDF/print approach (print CSS vs. client PDF lib).
+
+**Decision ordering (important).** The **content-format ADR (#3) is decided before** the content-unit
+schema is finalized and before precaching content is implemented — both depend on the chosen format.
+Until ADR #3 lands, the schema in this document is **provisional** (format-agnostic intent), and any
+M0 work on schema/precaching treats the content format as **decided by ADR #3, not assumed**. TASKS.md
+sequences this explicitly (schema and content tasks depend on the ADR task).
 
 ## Data, licensing & compliance
 
@@ -171,6 +231,17 @@ HazardModule {
 FEMA / Ready.gov (US, public domain), American Red Cross / IFRC, WHO, and **local/national
 civil-protection agencies** relevant to each target region/language. Each content unit must cite its
 sources with org, title, URL, retrieval date, and the source's license/terms.
+
+**Source-divergence precedence (when official sources conflict).** Authoritative sources sometimes
+give different or contradictory guidance for the same hazard. A unit must not silently pick one. The
+precedence rule is: **(1) the official agency with jurisdiction over the user's region wins** for that
+region (local/national civil-protection > supranational > foreign-national); **(2) for global/no-region
+units, prefer WHO for health-related guidance and FEMA/Ready.gov or Red Cross/IFRC for
+physical-hazard guidance;** **(3) where credible sources still materially disagree on a safety
+action, state the divergence explicitly and link both rather than averaging them.** Each region may
+carry a **region override** (the locally-authoritative instruction for that region) layered over the
+base unit, recorded with its source. Material divergences and the chosen precedence are noted in the
+unit's review-log entry so the decision is auditable.
 
 **Licensing rigor (critical).**
 - **Our outputs:** code under **MIT**; content under **CC-BY-4.0**.
@@ -209,8 +280,25 @@ toolkit.
   legal/weapons instruction; link out instead). Where a hazard touches life-safety nuance, an
   **emergency-management or relevant subject-matter expert** signs off. Translations are reviewed by
   a competent speaker **and** re-checked for safety accuracy, not just fluency.
-- **Accessibility:** every UI-affecting change passes automated checks **and** periodic manual
-  assistive-technology audits (screen reader + keyboard-only).
+  - **Role separation & no self-approval.** The author of a content unit may **not** approve it: the
+    `reviewedBy`/author and the `approvedBy`/SME must be **distinct people**. Approval requires an SME
+    who meets a **defined credential bar** — current or former emergency-management / civil-protection
+    professional, licensed first responder, or an equivalent recognized preparedness qualification —
+    recorded with the sign-off. (For general, non-life-safety content the domain-reviewer bar applies;
+    the SME bar is mandatory wherever a unit touches life-safety nuance.)
+  - **Tamper-evident review log.** Every approval writes a **PR-tied review-log entry** (PR number,
+    commit SHA, unit `contentVersion`, reviewer + approver identities, sources checked, divergence
+    notes, decision). The log is append-only and committed in-repo so each entry is bound to an
+    immutable commit — the auditable record the *Definition of Shipped* checks against.
+- **Accessibility:** every UI-affecting change passes automated checks **and** a **manual
+  assistive-technology audit** bound to a defined support matrix, **not** an ad-hoc spot check:
+  - **Combos audited:** NVDA + Firefox on Windows, JAWS + Chrome on Windows, VoiceOver + Safari on
+    macOS/iOS, and TalkBack + Chrome on Android — plus keyboard-only on each desktop browser.
+  - **Cadence:** before each milestone exit and before every production release, and a regression
+    pass on any change to navigation, focus management, or form/interaction patterns.
+  - **Who is qualified:** the audit is performed/signed off by the **accessibility reviewer** — a
+    contributor competent and regularly working with the named assistive technologies (daily AT users
+    preferred) — not by an automated tool alone.
 
 **Definition of Shipped (project-level).** A deployed, installable, offline-capable toolkit that:
 (1) passes WCAG 2.2 AA (automated + manual), (2) works fully offline after install (verified by E2E),
@@ -219,6 +307,15 @@ and (5) is **adopted/endorsed by a named partner emergency-management org and av
 community's languages.** Until a partner is secured, criterion (5) is **outstanding** and the
 project is "publicly usable" but not yet "shipped" by Elyos's *delivered, not merged* bar.
 
+**"Publicly shipped (no partner)" success state — so a finished toolkit isn't stranded.** Criteria
+(1)–(4) can be fully met without any partner. If, by a **decision point set at 6 months after the M3
+build is production-ready**, no partner has been secured, the steward + Elyos governance make an
+explicit call to declare **"Publicly Shipped (generic public good)"**: the toolkit is deployed,
+announced, and distributed directly (and via mutual-aid/community channels) as a self-standing public
+good, with outcomes tracked by best-effort self-report rather than a partner. This is a recognized,
+honest success state — distinct from the fuller "Shipped (partner-adopted)" state — and partner
+outreach continues in parallel so a later endorsement upgrades the status rather than gating launch.
+
 ## Roadmap & milestones
 
 Phased; each phase has measurable exit criteria. M0 is a thin cold-start foundation.
@@ -226,10 +323,13 @@ Phased; each phase has measurable exit criteria. M0 is a thin cold-start foundat
 - **M0 — Foundation & cold-start (thin slice).**
   Goal: a minimal installable, offline PWA skeleton with a11y + privacy guardrails in CI, plus the
   content schema and one source-cited sample hazard.
-  Exit criteria: PWA installs and loads offline after first visit; service worker precaches shell;
-  CI runs lint/typecheck/unit/axe and an offline smoke E2E; content schema + provenance/review-log
-  format defined; ADRs recorded for framework + SW tooling; one hazard rendered from a content unit
-  with citations; zero telemetry verified by audit.
+  Exit criteria: PWA installs and loads offline after first visit; service worker precaches shell
+  within the precache budget; CI runs lint/typecheck/unit/axe and an offline smoke E2E; **content-
+  format ADR (#3) recorded before** the content schema + provenance/review-log format are finalized;
+  ADRs also recorded for UI framework (with i18n/RTL scope settled as input) + SW tooling (incl.
+  precache budget/eviction + content-version manifest); one hazard rendered from a content unit with
+  citations; zero telemetry verified by CSP `connect-src 'none'` + runtime network-interception E2E
+  (not a static grep alone).
 
 - **M1 — Core features & accessibility hardening.**
   Goal: the real user value — checklists, household plan builder, go-bag generator, "what to do now"
@@ -293,7 +393,7 @@ milestone, milestone Definitions of Done, a backlog, and a complete example Task
 | --- | --- | --- | --- | --- |
 | Inaccurate/mis-stated emergency advice causes harm | Medium | High | Mandatory source-cited accuracy review per unit; SME sign-off for life-safety nuance; scope guardrail (link out for medical/legal/weapons) | Content/safety reviewer |
 | Copyright/trademark misuse of source content (esp. Red Cross/national agencies) | Medium | High | Paraphrase + cite, never copy verbatim or reuse logos; verify each source license; provenance log; legal-stance default to "link, don't embed" | Maintainer |
-| No partner org secured (verified need unconfirmed) | Medium | High | Pursue named partner early in parallel; ship as generic public good meanwhile; Definition of Shipped explicitly gates on partner | Steward |
+| No partner org secured (verified need unconfirmed) | Medium | High | Pursue named partner early in parallel; **6-month-post-M3 decision point** to declare "Publicly Shipped (generic public good)" so a finished toolkit isn't stranded; partner endorsement later upgrades status rather than gating launch | Steward |
 | Offline behavior fails in real degraded-network conditions | Medium | High | Offline E2E in CI with network disabled; manual field-style testing; explicit cache/update strategy + fallback | Maintainer |
 | Accessibility regressions slip in | Medium | High | a11y gate in CI (axe/pa11y) blocking merge; periodic manual AT audits; AA as hard requirement | A11y reviewer |
 | Content goes stale vs. updated official guidance | High | Medium | `lastReviewed` dates + periodic re-review cadence; provenance log flags age; maintenance tasks | Content reviewer |
@@ -311,12 +411,21 @@ risk, (3) third-party script/tracker creep, (4) hostile forks implying false age
 **Controls.**
 - **No secrets** in the app; nothing to leak. No API keys, tokens, or credentials in code, logs, or
   receipts (per Elyos rule). Static hosting only.
-- **No telemetry / no PII:** enforced and audited in CI (no analytics/trackers; no network egress in
-  core flows). User-entered plan/go-bag data stays on-device and is exported only by explicit action.
+- **No telemetry / no PII:** enforced by **defense in depth**, not a static grep alone. (1) A strict
+  Content-Security-Policy with **`connect-src 'none'`** (plus locked-down `script-src`/`img-src`/
+  `font-src 'self'`) blocks runtime exfiltration at the browser level. (2) A **runtime
+  network-interception E2E test** (Playwright route interception) exercises every core flow and
+  **fails the build on any unexpected outbound request**. (3) The static CI audit (no analytics/
+  trackers/PII fields) remains as a cheap first line. User-entered plan/go-bag data stays on-device
+  and is exported only by explicit action.
 - **Supply chain:** pinned/locked dependencies (pnpm lockfile), dependency review, minimal deps,
   Subresource Integrity where applicable; CI dependency audit.
 - **Service worker hygiene:** scoped SW, integrity-checked precache manifest, explicit versioning and
-  update prompt to avoid users stuck on stale safety content; HTTPS-only.
+  update flow to avoid users stuck on stale safety content; HTTPS-only.
+- **Safety-content integrity & forced invalidation:** the **content-version manifest** carries a
+  per-unit `integrityHash`; the SW verifies cached units against it and **hard-invalidates** any unit
+  flagged for a safety correction — purging it and forcing a re-fetch before display (non-dismissible
+  for that unit), so a corrected hazard instruction can never be served stale from cache.
 - **Content integrity:** all guidance source-cited and review-gated, reducing misinformation risk.
 - **Abuse/misuse:** prominent disclaimer that the tool is not an official agency product unless a
   named partner endorses it; trademark/branding terms documented; license requires attribution.
@@ -339,7 +448,9 @@ risk, (3) third-party script/tracker creep, (4) hostile forks implying false age
 1. **Partner org:** Who is the named emergency-management partner? The proposal claims a verified
    need but names none — this needs a human decision before *Definition of Shipped* can be met.
 2. **Priority hazards & regions:** Which hazards and regions are first (should be partner-driven)?
-3. **Priority languages:** Which non-English language(s) at M2, driven by which beneficiary community?
+3. **Priority languages:** First non-English locale is **provisionally Spanish (es)** at M2 (with an
+   RTL locale prioritized for M3); a partner, once secured, can override the priority for its
+   community.
 4. **UI framework & SW tooling:** final ADR decisions (M0).
 5. **Legal review of source reuse:** do we need a one-time legal check of our paraphrase/citation
    stance for Red Cross / national-agency content?
